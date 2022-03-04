@@ -38,6 +38,10 @@ public:
 		bus = n; 
 	}
 
+	std::map<uint16_t, std::string> disassemble(uint16_t nStart, uint16_t nStop);
+
+	bool complete();
+
 	//CPU Signals
 	void clock();
 	void reset();
