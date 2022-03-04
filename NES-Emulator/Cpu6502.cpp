@@ -1,6 +1,12 @@
 #include "Cpu6502.hpp"
 #include "Bus.hpp"
 
+const unsigned int STACK_POINTER_BASE_LOCATION = 0x0100;
+const unsigned int PROGRAM_DATA_BASE_LOCATION = 0xFFFC;
+const unsigned int INTERRUPT_SERVICE_BASE_LOCATION = 0xFFFE;
+const unsigned int NM_INTERRUPT_SERVICE_BASE_LOCATION = 0xFFFA;
+const unsigned int MAX_ADDRESS = 0xFFFF;
+
 Cpu6502::Cpu6502()
 {
 	//Assign opcodes to related functions
@@ -59,6 +65,76 @@ void Cpu6502::clock()
 	}
 
 	cycles--;
+}
+
+void Cpu6502::reset()
+{
+	a = 0;
+	x = 0;
+	y = 0;
+	sp = 0xFD;
+	status = 0x00 | U;
+
+	addr_abs = PROGRAM_DATA_BASE_LOCATION;
+	uint16_t low = read(addr_abs);
+	uint16_t high = read(addr_abs + 1);
+	pc = (high << 8) | low;
+
+	addr_rel = 0x0000;
+	addr_abs = 0x0000;
+	fetched = 0x00;
+
+	cycles = 8;
+}
+
+
+//Interrupt request
+//Save state of program before servicing interrupt
+void Cpu6502::irq()
+{
+	if (GetFlag(I) == 0)
+	{
+		write(STACK_POINTER_BASE_LOCATION + sp, (pc >> 8) & 0x00FF);
+		sp--;
+		write(STACK_POINTER_BASE_LOCATION + sp, pc & 0x00FF);
+		sp--;
+
+		SetFlag(B, 0);
+		SetFlag(U, 1);
+		SetFlag(I, 1);
+		write(STACK_POINTER_BASE_LOCATION + sp, status);
+		sp--;
+
+		addr_abs = INTERRUPT_SERVICE_BASE_LOCATION;
+		uint16_t low = read(addr_abs);
+		uint16_t high = read(addr_abs + 1);
+		pc = (high << 8) | low;
+
+		cycles = 7;
+	}
+}
+
+//Non-maskable interrupt request
+//Save state of program before servicing interrupt
+void Cpu6502::nmi()
+{
+	write(STACK_POINTER_BASE_LOCATION + sp, (pc >> 8) & 0x00FF);
+	sp--;
+	write(STACK_POINTER_BASE_LOCATION + sp, pc & 0x00FF);
+	sp--;
+
+	SetFlag(B, 0);
+	SetFlag(U, 1);
+	SetFlag(I, 1);
+	write(STACK_POINTER_BASE_LOCATION + sp, status);
+	sp--;
+
+	addr_abs = NM_INTERRUPT_SERVICE_BASE_LOCATION;
+	uint16_t low = read(addr_abs);
+	uint16_t high = read(addr_abs + 1);
+	pc = (high << 8) | low;
+
+	cycles = 8;
 }
 
 //Flag handling
@@ -244,3 +320,744 @@ uint8_t Cpu6502::REL()
 #pragma endregion
 
 //Opcodes
+#pragma region
+
+uint8_t Cpu6502::fetch()
+{
+	if (lookup[opcode].addrmode != &Cpu6502::IMP)
+		fetched = read(addr_abs);
+
+	return fetched;
+}
+
+//ADD fetched to accumulator
+uint8_t Cpu6502::ADC()
+{
+	fetch();
+
+	uint16_t temp = (uint16_t)a + (uint16_t)fetched + (uint16_t)GetFlag(C);
+
+	SetFlag(C, temp > 255);
+	SetFlag(Z, (temp & 0x00FF) == 0);
+	SetFlag(N, (temp & 0x80));
+	SetFlag(V, (~((uint16_t)a ^ (uint16_t)fetched) & ((uint16_t)a ^ (uint16_t)temp)) & 0x0080);
+
+	a = temp & 0x00FF;
+
+	return 1;
+}
+
+//AND on accumulator and fetched value
+uint8_t Cpu6502::AND()
+{
+	fetch();
+	a &= fetched;
+	SetFlag(Z, a == 0x00);
+	SetFlag(N, a & 0x80);
+
+	return 1;
+}
+
+//Shift left
+uint8_t Cpu6502::ASL()
+{
+	fetch();
+	uint16_t temp = (uint16_t)fetched << 1;
+
+	SetFlag(C, (temp & 0xFF00) > 0);
+	SetFlag(Z, (temp & 0x00FF) == 0);
+	SetFlag(N, temp & 0x80);
+
+	if (lookup[opcode].addrmode == &Cpu6502::IMP)
+		a = temp & 0x00FF;
+	else
+		write(addr_abs, temp & 0x00FF);
+
+	return 0;
+}
+
+//Branch if carry bit is set
+uint8_t Cpu6502::BCS()
+{
+	if (GetFlag(C) == 1)
+	{
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		//Add extra clock cycle if page boundary is crossed
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+			cycles++;
+
+		pc = addr_abs;
+	}
+
+	return 0;
+}
+
+//Branch if carry bit is not set
+uint8_t Cpu6502::BCC()
+{
+	if (GetFlag(C) == 0)
+	{
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		//Add extra clock cycle if page boundary is crossed
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+			cycles++;
+
+		pc = addr_abs;
+	}
+
+	return 0;
+}
+
+//Branch if zero bit is set
+uint8_t Cpu6502::BEQ()
+{
+	if (GetFlag(Z) == 1)
+	{
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		//Add extra clock cycle if page boundary is crossed
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+			cycles++;
+
+		pc = addr_abs;
+	}
+
+	return 0;
+}
+
+//Modifies Z, N, and V flags with fetched value
+uint8_t Cpu6502::BIT()
+{
+	fetch();
+
+	uint16_t temp = a & fetched;
+
+	SetFlag(Z, (temp & 0x00FF) == 0x00);
+	SetFlag(N, fetched & (1 << 7));
+	SetFlag(V, fetched & (1 << 6));
+
+	return 0;
+}
+
+//Branch if negative bit is set
+uint8_t Cpu6502::BMI()
+{
+	if (GetFlag(N) == 1)
+	{
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		//Add extra clock cycle if page boundary is crossed
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+			cycles++;
+
+		pc = addr_abs;
+	}
+
+	return 0;
+}
+
+//Branch if zero bit is not set
+uint8_t Cpu6502::BNE()
+{
+	if (GetFlag(Z) == 0)
+	{
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		//Add extra clock cycle if page boundary is crossed
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+			cycles++;
+
+		pc = addr_abs;
+	}
+
+	return 0;
+}
+
+//Branch if negative bit is not set
+uint8_t Cpu6502::BPL()
+{
+	if (GetFlag(N) == 0)
+	{
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		//Add extra clock cycle if page boundary is crossed
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+			cycles++;
+
+		pc = addr_abs;
+	}
+
+	return 0;
+}
+
+//BREAK
+uint8_t Cpu6502::BRK()
+{
+	pc++;
+
+	SetFlag(I, 1);
+	write(STACK_POINTER_BASE_LOCATION + sp, (pc >> 8) & 0x00FF);
+	sp--;
+	write(STACK_POINTER_BASE_LOCATION + sp, pc & 0x00FF);
+	sp--;
+
+	SetFlag(B, 1);
+	write(STACK_POINTER_BASE_LOCATION + sp, status);
+	sp--;
+	SetFlag(B, 0);
+
+	pc = (uint16_t)read(INTERRUPT_SERVICE_BASE_LOCATION) | ((uint16_t)read(MAX_ADDRESS) << 8);
+
+	return 0;
+}
+
+//Branch if overflow bit is not set
+uint8_t Cpu6502::BVC()
+{
+	if (GetFlag(V) == 0)
+	{
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		//Add extra clock cycle if page boundary is crossed
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+			cycles++;
+
+		pc = addr_abs;
+	}
+
+	return 0;
+}
+
+//Branch if overflow bit is set
+uint8_t Cpu6502::BVS()
+{
+	if (GetFlag(V) == 1)
+	{
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		//Add extra clock cycle if page boundary is crossed
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+			cycles++;
+
+		pc = addr_abs;
+	}
+
+	return 0;
+}
+
+//CLEAR carry bit
+uint8_t Cpu6502::CLC()
+{
+	SetFlag(C, false);
+	return 0;
+}
+
+//CLEAR decimal mode bit
+uint8_t Cpu6502::CLD()
+{
+	SetFlag(D, false);
+	return 0;
+}
+
+//CLEAR interrupt bit
+uint8_t Cpu6502::CLI()
+{
+	SetFlag(I, false);
+	return 0;
+}
+
+//CLEAR overflow bit
+uint8_t Cpu6502::CLV()
+{
+	SetFlag(V, false);
+	return 0;
+}
+
+//Compare accumulator and memory
+uint8_t Cpu6502::CMP()
+{
+	fetch();
+
+	uint16_t temp = (uint16_t)a - (uint16_t)fetched;
+
+	SetFlag(C, a >= fetched);
+	SetFlag(Z, (temp & 0x00FF) == 0x0000);
+	SetFlag(N, temp & 0x0080);
+
+	return 1;
+}
+
+//Compare X register to memory
+uint8_t Cpu6502::CPX()
+{
+	fetch();
+
+	uint16_t temp = (uint16_t)x - (uint16_t)fetched;
+
+	SetFlag(C, x >= fetched);
+	SetFlag(Z, (temp & 0x00FF) == 0x0000);
+	SetFlag(N, temp & 0x0080);
+
+	return 0;
+}
+
+//Compare Y register to memory
+uint8_t Cpu6502::CPY()
+{
+	fetch();
+
+	uint16_t temp = (uint16_t)y - (uint16_t)fetched;
+
+	SetFlag(C, y >= fetched);
+	SetFlag(Z, (temp & 0x00FF) == 0x0000);
+	SetFlag(N, temp & 0x0080);
+
+	return 0;
+}
+
+//Decrement value at memory location
+uint8_t Cpu6502::DEC()
+{
+	uint8_t temp = fetch();
+	temp--;
+
+	SetFlag(N, temp & 0x80);
+	SetFlag(Z, temp == 0x00);
+
+	write(addr_abs, temp);
+
+	return 0;
+}
+
+//Decrement value in x register
+uint8_t Cpu6502::DEX()
+{
+	x--;
+
+	SetFlag(N, x & 0x80);
+	SetFlag(Z, x == 0x00);
+
+	return 0;
+}
+
+//Decrement value in y register
+uint8_t Cpu6502::DEY()
+{
+	y--;
+
+	SetFlag(N, y & 0x80);
+	SetFlag(Z, y == 0x00);
+
+	return 0;
+}
+
+//XOR a, m
+uint8_t Cpu6502::EOR()
+{
+	uint8_t temp = fetch();
+
+	a ^= temp;
+
+	SetFlag(Z, a == 0x00);
+	SetFlag(N, a & 0x80);
+
+	return 1;
+}
+
+//Increment value at memory location
+uint8_t Cpu6502::INC()
+{
+	uint8_t temp = fetch();
+
+	temp++;
+
+	SetFlag(Z, temp == 0x00);
+	SetFlag(N, temp & 0x80);
+
+	write(addr_abs, temp);
+
+	return 0;
+}
+
+//Increment x register
+uint8_t Cpu6502::INX()
+{
+	x++;
+
+	SetFlag(Z, x == 0x00);
+	SetFlag(N, x & 0x80);
+
+	return 0;
+}
+
+//Increment y register
+uint8_t Cpu6502::INY()
+{
+	y++;
+
+	SetFlag(Z, y == 0x00);
+	SetFlag(N, y & 0x80);
+
+	return 0;
+}
+
+//JUMP to location
+uint8_t Cpu6502::JMP()
+{
+	pc = addr_abs;
+
+	return 0;
+}
+
+//JUMP to subroutine
+uint8_t Cpu6502::JSR()
+{
+	pc--;
+
+	write(STACK_POINTER_BASE_LOCATION + sp, (pc >> 8) & 0x00FF);
+	sp--;
+	write(STACK_POINTER_BASE_LOCATION + sp, pc & 0x00FF);
+	sp--;
+
+	pc = addr_abs;
+
+	return 0;
+}
+
+//LD a, m
+uint8_t Cpu6502::LDA()
+{
+	a = fetch();
+
+	SetFlag(Z, a == 0x00);
+	SetFlag(N, a & 0x80);
+
+	return 1;
+}
+
+//LD x, m
+uint8_t Cpu6502::LDX()
+{
+	x = fetch();
+
+	SetFlag(Z, x == 0x00);
+	SetFlag(N, x & 0x80);
+
+	return 1;
+}
+
+//LD y, m
+uint8_t Cpu6502::LDY()
+{
+	y = fetch();
+
+	SetFlag(Z, y == 0x00);
+	SetFlag(N, y & 0x80);
+
+	return 1;
+}
+
+//Shift right
+uint8_t Cpu6502::LSR()
+{
+	fetch();
+
+	SetFlag(C, fetched & 0x0001);
+
+	uint16_t temp = fetched >> 1;
+
+	SetFlag(Z, (temp & 0x00FF) == 0x0000);
+	SetFlag(N, temp & 0x0080);
+
+	if (lookup[opcode].addrmode == &Cpu6502::IMP)
+		a = temp & 0x00FF;
+	else
+		write(addr_abs, temp & 0x00FF);
+
+	return 0;
+}
+
+//Handle illegal opcodes
+uint8_t Cpu6502::NOP()
+{
+	switch (opcode) {
+	case 0x1C:
+	case 0x3C:
+	case 0x5C:
+	case 0x7C:
+	case 0xDC:
+	case 0xFC:
+		return 1;
+		break;
+	}
+
+	return 0;
+}
+
+//Bitwise XOR, a, m
+uint8_t Cpu6502::ORA()
+{
+	fetch();
+
+	a |= fetched;
+
+	SetFlag(Z, a == 0x00);
+	SetFlag(N, a & 0x80);
+
+	return 1;
+}
+
+//PUSH accumulator to stack
+uint8_t Cpu6502::PHA()
+{
+	write(STACK_POINTER_BASE_LOCATION + sp, a);
+	sp--;
+
+	return 0;
+}
+
+//PUSH status register to stack
+uint8_t Cpu6502::PHP()
+{
+	write(STACK_POINTER_BASE_LOCATION + sp, status | B | U);
+	SetFlag(B, 0);
+	SetFlag(U, 0);
+	sp--;
+
+	return 0;
+}
+
+//POP accumulator from stack
+uint8_t Cpu6502::PLA()
+{
+	sp++;
+	a = read(STACK_POINTER_BASE_LOCATION + sp);
+	SetFlag(Z, a == 0x00);
+	SetFlag(N, a & 0x80);
+
+	return 0;
+}
+
+//POP status register from stack
+uint8_t Cpu6502::PLP()
+{
+	sp++;
+	status = read(STACK_POINTER_BASE_LOCATION + sp);
+	SetFlag(U, 1);
+
+	return 0;
+}
+
+//Rotate left
+uint8_t Cpu6502::ROL()
+{
+	fetch();
+
+	uint16_t temp = (uint16_t)(fetched << 1) | GetFlag(C);
+
+	SetFlag(C, temp & 0xFF00);
+	SetFlag(Z, (temp & 0x00FF) == 0x0000);
+	SetFlag(N, temp & 0x0080);
+
+	if (lookup[opcode].addrmode == &Cpu6502::IMP)
+		a = temp & 0x00FF;
+	else
+		write(addr_abs, temp & 0x00FF);
+
+	return 0;
+}
+
+//Rotate right
+uint8_t Cpu6502::ROR()
+{
+	fetch();
+
+	uint16_t temp = (uint16_t)(GetFlag(C) << 7) | (fetched >> 1);
+
+	SetFlag(C, fetched & 0x01);
+	SetFlag(Z, (temp & 0x00FF) == 0x00);
+	SetFlag(N, temp & 0x0080);
+
+	if (lookup[opcode].addrmode == &Cpu6502::IMP)
+		a = temp & 0x00FF;
+	else
+		write(addr_abs, temp & 0x00FF);
+
+	return 0;
+}
+
+//Return from interrupt and restore previous state
+uint8_t Cpu6502::RTI()
+{
+	sp++;
+	status = read(STACK_POINTER_BASE_LOCATION + sp);
+	status &= ~B;
+	status &= ~U;
+
+	sp++;
+	pc = (uint16_t)read(STACK_POINTER_BASE_LOCATION + sp);
+	sp++;
+	pc |= (uint16_t)read(STACK_POINTER_BASE_LOCATION + sp) << 8;
+
+	return 0;
+}
+
+//Return from subroutine
+uint8_t Cpu6502::RTS()
+{
+	sp++;
+	pc = (uint16_t)read(STACK_POINTER_BASE_LOCATION + sp);
+	sp++;
+	pc |= (uint16_t)read(STACK_POINTER_BASE_LOCATION + sp) << 8;
+
+	pc++;
+
+	return 0;
+}
+
+//SUBTRACT fetched from accumulator
+uint8_t Cpu6502::SBC()
+{
+	fetch();
+
+	uint16_t value = ((uint16_t)fetched) ^ 0x00FF;
+	uint16_t temp = (uint16_t)a + value + (uint16_t)GetFlag(C);
+
+	SetFlag(C, temp & 0xFF00);
+	SetFlag(Z, (temp & 0x00FF) == 0);
+	SetFlag(V, (temp ^ (uint16_t)a) & (temp ^ value) & 0x0080);
+	SetFlag(N, temp & 0x0080);
+
+	a = temp & 0x00FF;
+
+	return 1;
+}
+
+//Set carry flag
+uint8_t Cpu6502::SEC()
+{
+	SetFlag(C, true);
+
+	return 0;
+}
+
+//Set decimal flag
+uint8_t Cpu6502::SED()
+{
+	SetFlag(D, true);
+
+	return 0;
+}
+
+//Set interrupt flag
+uint8_t Cpu6502::SEI()
+{
+	SetFlag(I, true);
+
+	return 0;
+}
+
+//Store a, m
+uint8_t Cpu6502::STA()
+{
+	write(addr_abs, a);
+
+	return 0;
+}
+
+//Store x, m
+uint8_t Cpu6502::STX()
+{
+	write(addr_abs, x);
+
+	return 0;
+}
+
+//Store y, m
+uint8_t Cpu6502::STY()
+{
+	write(addr_abs, y);
+
+	return 0;
+}
+
+//Transfer a, x
+uint8_t Cpu6502::TAX()
+{
+	x = a;
+
+	SetFlag(Z, x == 0x00);
+	SetFlag(N, x & 0x80);
+
+	return 0;
+}
+
+//Transfer a, y
+uint8_t Cpu6502::TAY()
+{
+	y = a;
+
+	SetFlag(Z, y == 0x00);
+	SetFlag(N, y & 0x80);
+
+	return 0;
+}
+
+//Transfer sp, x
+uint8_t Cpu6502::TSX()
+{
+	x = sp;
+
+	SetFlag(Z, x == 0x00);
+	SetFlag(N, x & 0x80);
+
+	return 0;
+}
+
+//Transfer x, a
+uint8_t Cpu6502::TXA()
+{
+	a = x;
+
+	SetFlag(Z, a == 0x00);
+	SetFlag(N, a & 0x80);
+
+	return 0;
+}
+
+//Transfer x, sp
+uint8_t Cpu6502::TXS()
+{
+	sp = x;
+
+	return 0;
+}
+
+//Transfer y, a
+uint8_t Cpu6502::TYA()
+{
+	a = y;
+
+	SetFlag(Z, a == 0x00);
+	SetFlag(N, a & 0x80);
+
+	return 0;
+}
+
+//Capture illegal opcodes
+uint8_t Cpu6502::XXX()
+{
+	return 0;
+}
+
+#pragma endregion
