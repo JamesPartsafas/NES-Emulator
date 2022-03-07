@@ -142,13 +142,21 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Bus.cpp" />
+    <ClCompile Include="Cartridge.cpp" />
     <ClCompile Include="Cpu6502.cpp" />
     <ClCompile Include="Main.cpp" />
+    <ClCompile Include="Mapper.cpp" />
+    <ClCompile Include="Mapper_000.cpp" />
+    <ClCompile Include="Ppu2C02.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Bus.hpp" />
+    <ClInclude Include="Cartridge.hpp" />
     <ClInclude Include="Cpu6502.hpp" />
+    <ClInclude Include="Mapper.hpp" />
+    <ClInclude Include="Mapper_000.hpp" />
     <ClInclude Include="olcPixelGameEngine.h" />
+    <ClInclude Include="Ppu2C02.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
