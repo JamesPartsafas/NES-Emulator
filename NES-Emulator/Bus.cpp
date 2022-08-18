@@ -77,5 +77,12 @@ void Bus::clock()
 	{
 		cpu.clock();
 	}
+
+	if (ppu.nmi)
+	{
+		ppu.nmi = false;
+		cpu.nmi();
+	}
+
 	nSystemClockCounter++;
 }

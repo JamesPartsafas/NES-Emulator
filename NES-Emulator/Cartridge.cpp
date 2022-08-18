@@ -34,6 +34,7 @@ Cartridge::Cartridge(const std::string& sFileName)
 
 		//Determine ID of mapper
 		nMapperID = ((header.mapper2 >> 4) << 4) | (header.mapper1 >> 4);
+		mirror = (header.mapper1 & 0x01) ? VERTICAL : HORIZONTAL;
 
 		//Determine file format
 		uint8_t nFileType = 1;
